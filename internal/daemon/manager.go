@@ -241,7 +241,13 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		}
 	}
 	if latestForBranch == nil {
-		return "", fmt.Errorf("no previous run for branch %s", branch)
+		baseSHA := git.EmptyTreeSHA
+		if repo.DefaultBranch != "" && branch != repo.DefaultBranch {
+			if mergeBase, err := git.Run(ctx, gateDir, "merge-base", "refs/heads/"+branch+"^{commit}", "refs/heads/"+repo.DefaultBranch+"^{commit}"); err == nil && strings.TrimSpace(mergeBase) != "" {
+				baseSHA = mergeBase
+			}
+		}
+		return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
 	}
 
 	baseSHA := latestForBranch.BaseSHA

@@ -175,7 +175,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
+		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD)
 	}
 
 	var content prContent
@@ -191,13 +191,16 @@ Diff stat:
 				if content.Title != originalTitle {
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
-				content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+				content.Body, err = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+				if err != nil {
+					return prContent{}, err
+				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD), nil
+	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD)
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -248,10 +251,13 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
 }
 
-func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
+func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) (string, error) {
 	body = stripGeneratedSections(body)
-	body = prependIntentSection(body, sctx)
-	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	body, err := prependIntentSection(body, sctx)
+	if err != nil {
+		return "", err
+	}
+	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD), nil
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
@@ -891,23 +897,24 @@ func isGeneratedSectionHeading(line string) bool {
 }
 
 // prependIntentSection prepends a "## Intent" section sourced from the
-// already-extracted user intent. The intent text is reused verbatim (after
+// current run's persisted intent. The intent text is reused verbatim (after
 // the same secret/adversarial scrubbing the agent prompt path applies)
-// rather than being paraphrased by the agent. Returns body unchanged when
-// no intent is available.
-func prependIntentSection(body string, sctx *pipeline.StepContext) string {
+// rather than being paraphrased by the agent. It fails closed when the
+// current run has no usable intent instead of emitting a PR body whose
+// Intent section could be stale, inferred elsewhere, or silently omitted.
+func prependIntentSection(body string, sctx *pipeline.StepContext) (string, error) {
 	cleaned := cleanedUserIntent(sctx)
 	if cleaned == "" {
-		return body
+		return "", fmt.Errorf("current run is missing an intent; refusing to generate a PR body without a deterministic ## Intent section")
 	}
 	section := "## Intent\n\n" + cleaned
 	if strings.TrimSpace(body) == "" {
-		return section
+		return section, nil
 	}
-	return section + "\n\n" + body
+	return section + "\n\n" + body, nil
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string) prContent {
+func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string) (prContent, error) {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -931,9 +938,12 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 	if body == "## What Changed\n\n" {
 		body = fmt.Sprintf("## What Changed\n\n- %s", title)
 	}
-	body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+	body, err := buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+	if err != nil {
+		return prContent{}, err
+	}
 	return prContent{
 		Title: title,
 		Body:  body,
-	}
+	}, nil
 }
