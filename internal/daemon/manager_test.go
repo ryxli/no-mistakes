@@ -268,6 +268,53 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestRerunStartsFirstRunForBranchWithoutHistory(t *testing.T) {
+	review := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{review}
+	})
+
+	repo, baseHeadSHA := setupTestGitRepo(t, p, d, "first-rerun-repo")
+	workDir := repo.WorkingPath
+	gitCmd(t, workDir, "checkout", "-b", "feature/linked")
+	if err := os.WriteFile(filepath.Join(workDir, "feature.txt"), []byte("feature work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "feature.txt")
+	gitCmd(t, workDir, "commit", "-m", "feature work")
+	featureHeadSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/feature/linked")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID: "first-rerun-repo",
+		Branch: "feature/linked",
+		Intent: "test linked worktree start",
+	}, &result)
+	if err != nil {
+		t.Fatalf("rerun should seed a first run for a branch with no history: %v", err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+	if run.Branch != "feature/linked" {
+		t.Fatalf("run branch = %q, want %q", run.Branch, "feature/linked")
+	}
+	if run.HeadSHA != featureHeadSHA {
+		t.Fatalf("run head SHA = %q, want %q", run.HeadSHA, featureHeadSHA)
+	}
+	if run.BaseSHA != baseHeadSHA {
+		t.Fatalf("run base SHA = %q, want %q", run.BaseSHA, baseHeadSHA)
+	}
+}
+
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

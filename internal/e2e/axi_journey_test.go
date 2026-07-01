@@ -108,6 +108,9 @@ func TestAxiAgentJourney(t *testing.T) {
 			t.Errorf("axi run gate output missing %q in:\n%s", want, gateOut)
 		}
 	}
+	if strings.Contains(gateOut, "no previous run for branch") {
+		t.Fatalf("axi run from a linked worktree should seed a first run instead of hitting the rerun guard:\n%s", gateOut)
+	}
 
 	// The daemon should now hold the run at the review gate.
 	if gated := waitForStepStatus(t, h, "feature/axi", types.StepReview, types.StepStatusAwaitingApproval, 60*time.Second); gated == nil {
